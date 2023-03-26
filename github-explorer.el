@@ -5,7 +5,7 @@
 ;; Author: Giap Tran <txgvnn@gmail.com>
 ;; URL: https://github.com/TxGVNN/github-explorer
 ;; Version: 1.1.0
-;; Package-Requires: ((emacs "25") (graphql))
+;; Package-Requires: ((emacs "25") (graphql "0.1.2"))
 ;; Keywords: comm
 
 ;; This file is NOT part of GNU Emacs.
@@ -32,8 +32,10 @@
 (require 'json)
 (require 'graphql)
 (require 'hi-lock)
+(require 'gh)
+(require 'gh-search)
 
-(defgroup github nil
+(defgroup github-explorer nil
   "Major mode of GitHub configuration file."
   :group 'languages
   :prefix "github-explorer-")
@@ -41,17 +43,17 @@
 (defcustom github-explorer-hook nil
   "*Hook run by `github-explorer'."
   :type 'hook
-  :group 'github)
+  :group 'github-explorer)
 
 (defcustom github-explorer-name "GitHub"
   "*Modeline of `github-explorer'."
   :type 'string
-  :group 'github)
+  :group 'github-explorer)
 
 (defcustom github-explorer-sourcegraph-url "https://github1s.com/api/sourcegraph"
   "Sourcegraph API path."
   :type 'string
-  :group 'github)
+  :group 'github-explorer)
 
 (defvar github-explorer-mode-map
   (let ((keymap (make-sparse-keymap)))
@@ -73,9 +75,11 @@
 (defvar github-explorer-paths (make-hash-table :test 'equal))
 
 (defun github-explorer-paths--put (repo paths)
+  "Put REPO to `github-explorer-paths' at PATHS."
   (puthash repo paths github-explorer-paths))
 
 (defun github-explorer-paths--get (repo)
+  "Get REPO from `github-explorer-paths' at PATHS."
   (gethash repo github-explorer-paths))
 
 (defun github-explorer-util-package-try-get-package-url ()
@@ -83,9 +87,12 @@
 
 From URL `https://github.com/akshaybadola/emacs-util'
 `util/package-try-get-package-url'."
+  (require 'package)
   (when (and (eq major-mode 'package-menu-mode))
     (let ((pkg-desc (tabulated-list-get-id (point))))
-      (when (and pkg-desc (package-desc-extras pkg-desc))
+      (when (and pkg-desc
+                 (fboundp 'package-desc-extras)
+                 (package-desc-extras pkg-desc))
         (message (cdr (assq :url (package-desc-extras  pkg-desc))))
         (cdr (assq :url (package-desc-extras  pkg-desc)))))))
 
@@ -93,38 +100,78 @@ From URL `https://github.com/akshaybadola/emacs-util'
   "Get repo user/name from URL."
   (string-join (last (split-string url "/") 2) "/"))
 
+
+
+;;;###autoload
+(defun github-explorer-search-read-repo (&optional search-string page-limit)
+  "Query github using SEARCH-STRING with PAGE-LIMIT."
+  (let* ((search-api (make-instance 'gh-search-api))
+         (search-response (gh-search-repos search-api
+                                           (or search-string
+                                               (read-string
+                                                "Enter a github search string: "))
+                                           (or page-limit 3)))
+         (repos (oref search-response data))
+         (alist (mapcar (lambda (repo)
+                          (let ((owner (oref repo owner)))
+                            (cons (format "%s/%s"
+                                          (if owner (oref owner login)
+                                            "owner-not-found")
+                                          (oref repo name))
+                                  repo)))
+                        repos)))
+    (completing-read "Repos: " alist)))
+
 ;;;###autoload
 (defun github-explorer (&optional repo)
   "Go REPO github."
   (interactive (list (or (and (thing-at-point 'url t)
-                              (github-explorer-repo-from-url (thing-at-point 'url t)))
+                              (github-explorer-repo-from-url (thing-at-point
+                                                              'url t)))
                          (and (eq major-mode 'org-mode)
+                              (and (fboundp 'org-element-type)
+                                   (fboundp 'org-element-context))
                               (eq (org-element-type (org-element-context)) 'link)
-                              (github-explorer-repo-from-url
-                               (org-element-property :raw-link (org-element-context))))
+                              (when (fboundp 'org-element-property)
+                                (ignore-errors
+                                  (github-explorer-repo-from-url
+                                   (org-element-property :raw-link
+                                                         (org-element-context))))))
                          (and (eq major-mode 'package-menu-mode)
-                              (github-explorer-repo-from-url (github-explorer-util-package-try-get-package-url)))
+                              (github-explorer-repo-from-url
+                               (github-explorer-util-package-try-get-package-url)))
+                         (github-explorer-search-read-repo)
                          (thing-at-point 'symbol))))
   (let ((repo (read-string "Repository: " repo)))
-    (url-retrieve (format "https://api.github.com/repos/%s/git/trees/HEAD:?recursive=1" repo)
+    (url-retrieve (format
+                   "https://api.github.com/repos/%s/git/trees/HEAD:?recursive=1"
+                   repo)
                   (lambda (arg)
-                    (cond
-                     ((equal :error (car arg))
-                      (message arg))
-                     (t
-                      (with-current-buffer (current-buffer)
-                        (goto-char (point-min))
-                        (re-search-forward "^$")
-                        (delete-region (+ 1 (point)) (point-min))
-                        (goto-char (point-min))
-                        (let* ((paths (remove nil
-                                              (mapcar (lambda (x)
-                                                        (if (equal (cdr (assoc 'type x)) "blob")
-                                                            (cdr (assoc 'path x))))
-                                                      (cdr (assoc 'tree (json-read)))))))
-                          (github-explorer-paths--put repo paths)
-                          (github-explorer--tree repo (format "https://api.github.com/repos/%s/git/trees/%s"
-                                                              repo "HEAD") "/")))))))))
+                    (cond ((equal :error (car arg))
+                           (message arg))
+                          (t
+                           (with-current-buffer (current-buffer)
+                             (goto-char (point-min))
+                             (re-search-forward "^$")
+                             (delete-region (+ 1 (point))
+                                            (point-min))
+                             (goto-char (point-min))
+                             (let* ((paths
+                                     (remove nil
+                                             (mapcar
+                                              (lambda (x)
+                                                (if (equal
+                                                     (cdr
+                                                      (assoc
+                                                       'type x))
+                                                     "blob")
+                                                    (cdr (assoc 'path x))))
+                                              (cdr (assoc 'tree
+                                                          (json-read)))))))
+                               (github-explorer-paths--put repo paths)
+                               (github-explorer--tree repo (format
+                                                            "https://api.github.com/repos/%s/git/trees/%s"
+                                                            repo "HEAD") "/")))))))))
 
 (defun github-explorer-find-file ()
   "Find file in REPO."
@@ -209,10 +256,16 @@ This function will create *GitHub:REPO:* buffer"
   "Apply auto-mode for buffer GitHub.
 pop-to-buffer(BUFFER-OR-NAME &OPTIONAL ACTION NORECORD)"
   (unless buffer-file-name
-    (if (string-match-p (regexp-quote (format "*%s:" github-explorer-name)) (buffer-name))
-        (let ((buffer-file-name (substring (buffer-name) 0 -1))) ;; remove * ending
-          (set-auto-mode t)))))
-(advice-add 'pop-to-buffer :after #'github-explorer-apply-auto-mode)
+    (when (string-match-p (regexp-quote (format "*%s:" github-explorer-name))
+                          (buffer-name))
+      (setq buffer-file-name (concat
+                              (or (when (fboundp 'temporary-file-directory)
+                                    (temporary-file-directory))
+                                  "/tmp/")
+                              (file-name-nondirectory (substring (buffer-name) 0
+                                                                 -1))))
+      (set-auto-mode t))))
+
 
 (defun github-explorer--item-path (item)
   "Get the path for an ITEM from GitHub."
@@ -225,20 +278,20 @@ pop-to-buffer(BUFFER-OR-NAME &OPTIONAL ACTION NORECORD)"
 (defun github-explorer--render-object (github-explorer-object)
   "Render the GITHUB-EXPLORER-OBJECT."
   (let ((trees (cdr (assoc 'tree github-explorer-object))))
-	(cl-loop
-	 for item across trees
-	 for path = (github-explorer--item-path item)
+  (cl-loop
+   for item across trees
+   for path = (github-explorer--item-path item)
 
-	 if (string= (github-explorer--item-type item) "blob")
-	 do (insert (format "  |----- %s" path))
-	 else do
-	 (insert (format "  |--[+] %s" path))
-	 (left-char (length path))
-	 (put-text-property (point) (+ (length path) (point)) 'face 'github-explorer-directory-face)
+   if (string= (github-explorer--item-type item) "blob")
+   do (insert (format "  |----- %s" path))
+   else do
+   (insert (format "  |--[+] %s" path))
+   (left-char (length path))
+   (put-text-property (point) (+ (length path) (point)) 'face 'github-explorer-directory-face)
 
-	 do
-	 (put-text-property (line-beginning-position) (1+ (line-beginning-position)) 'invisible item)
-	 (end-of-line)
+   do
+   (put-text-property (line-beginning-position) (1+ (line-beginning-position)) 'invisible item)
+   (end-of-line)
      (insert "\n")))
   (insert "\nMenu:\n(f) find file.\n(s) search string."))
 
