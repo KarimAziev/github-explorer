@@ -232,25 +232,28 @@ This function will create *GitHub:REPO:* buffer"
   "Get raw of PATH in REPO github."
   (let (url)
     (setq url (format "https://raw.githubusercontent.com/%s/HEAD%s" repo path))
-    (setq github-explorer-buffer-temp (format "*%s:%s:%s*" github-explorer-name repo path))
+    (setq github-explorer-buffer-temp (format "*%s:%s:%s*" github-explorer-name
+                                              repo path))
     (url-retrieve url
                   (lambda (arg)
-                    (cond
-                     ((equal :error (car arg))
-                      (message arg))
-                     (t
-                      (with-current-buffer (current-buffer)
-                        (let (data)
-                          (goto-char (point-min))
-                          (re-search-forward "^$")
-                          (delete-region (+ 1 (point)) (point-min))
-                          (goto-char (point-min))
-                          (setq data (buffer-string))
-                          (with-current-buffer (get-buffer-create github-explorer-buffer-temp)
-                            (insert data)
-                            (pop-to-buffer (current-buffer))
-                            (goto-char (point-min))
-                            (setq-local github-explorer-repository repo))))))))))
+                    (cond ((equal :error (car arg))
+                           (message arg))
+                          (t
+                           (with-current-buffer (current-buffer)
+                             (let (data)
+                               (goto-char (point-min))
+                               (re-search-forward "^$")
+                               (delete-region (+ 1 (point))
+                                              (point-min))
+                               (goto-char (point-min))
+                               (setq data (buffer-string))
+                               (with-current-buffer (get-buffer-create
+                                                     github-explorer-buffer-temp)
+                                 (insert data)
+                                 (github-explorer-apply-auto-mode)
+                                 (pop-to-buffer (current-buffer))
+                                 (goto-char (point-min))
+                                 (setq-local github-explorer-repository repo))))))))))
 
 (defun github-explorer-apply-auto-mode (&rest _)
   "Apply auto-mode for buffer GitHub.
