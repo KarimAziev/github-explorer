@@ -3,10 +3,11 @@
 ;; Copyright (C) 2019 Giap Tran <txgvnn@gmail.com>
 
 ;; Author: Giap Tran <txgvnn@gmail.com>
-;; URL: https://github.com/TxGVNN/github-explorer
+;; URL: https://github.com/KarimAziev/github-explorer
 ;; Version: 1.1.0
-;; Package-Requires: ((emacs "25") (graphql "0.1.2"))
+;; Package-Requires: ((emacs "27.1") (graphql "0.1.1") (cl-lib "1.0") (gh "1.0.1"))
 ;; Keywords: comm
+;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
 
@@ -57,12 +58,13 @@
 
 (defvar github-explorer-mode-map
   (let ((keymap (make-sparse-keymap)))
-    (define-key keymap (kbd "o") 'github-explorer-at-point)
-    (define-key keymap (kbd "RET") 'github-explorer-at-point)
-    (define-key keymap (kbd "f") 'github-explorer-find-file)
-    (define-key keymap (kbd "s") 'github-explorer-search)
-    (define-key keymap (kbd "n") 'next-line)
-    (define-key keymap (kbd "p") 'previous-line)
+    (define-key keymap (kbd "o") #'github-explorer-at-point)
+    (define-key keymap (kbd "RET") #'github-explorer-at-point)
+    (define-key keymap (kbd "f") #'github-explorer-find-file)
+    (define-key keymap (kbd "s") #'github-explorer-search)
+    (define-key keymap (kbd "l") #'previous-buffer)
+    (define-key keymap (kbd "n") #'next-line)
+    (define-key keymap (kbd "p") #'previous-line)
     keymap)
   "Keymap for GitHub major mode.")
 
@@ -122,6 +124,78 @@ From URL `https://github.com/akshaybadola/emacs-util'
                         repos)))
     (completing-read "Repos: " alist)))
 
+(declare-function json-read "json")
+
+(defun github-explorer-json-read-buffer (&optional object-type array-type
+                                                   null-object false-object)
+  "Parse json from the current buffer using specified object and array types.
+
+The argument OBJECT-TYPE specifies which Lisp type is used
+to represent objects; it can be `hash-table', `alist' or `plist'.  It
+defaults to `alist'.
+
+The argument ARRAY-TYPE specifies which Lisp type is used
+to represent arrays; `array'/`vector' and `list'.
+
+The argument NULL-OBJECT specifies which object to use
+to represent a JSON null value.  It defaults to `:null'.
+
+The argument FALSE-OBJECT specifies which object to use to
+represent a JSON false value.  It defaults to `:false'."
+  (if (and (fboundp 'json-parse-string)
+           (fboundp 'json-available-p)
+           (json-available-p))
+      (json-parse-buffer
+       :object-type (or object-type 'alist)
+       :array-type
+       (pcase array-type
+         ('list 'list)
+         ('vector 'array)
+         (_ 'array))
+       :null-object (or null-object :null)
+       :false-object (or false-object :false))
+    (let ((json-object-type (or object-type 'alist))
+          (json-array-type
+           (pcase array-type
+             ('list 'list)
+             ('array 'vector)
+             (_ 'vector)))
+          (json-null (or null-object :null))
+          (json-false (or false-object :false)))
+      (json-read))))
+
+(defun github-explorer-fetch-repo-paths (repo)
+  (url-retrieve
+   (format
+    "https://api.github.com/repos/%s/git/trees/HEAD:?recursive=1"
+    repo)
+   (lambda (arg)
+     (cond ((equal :error (car arg))
+            (message arg))
+           (t
+            (with-current-buffer (current-buffer)
+              (goto-char (point-min))
+              (re-search-forward "^$")
+              (delete-region (+ 1 (point))
+                             (point-min))
+              (goto-char (point-min))
+              (let*
+                  ((paths
+                    (remove nil
+                            (mapcar
+                             (lambda (x)
+                               (pcase (cdr (assq 'type x))
+                                 ("blob" (cdr (assq 'path x)))))
+                             (cdr
+                              (assoc 'tree
+                                     (github-explorer-json-read-buffer)))))))
+                (github-explorer-paths--put repo paths)
+                (github-explorer--tree repo
+                                       (format
+                                        "https://api.github.com/repos/%s/git/trees/%s"
+                                        repo "HEAD")
+                                       "/"))))))))
+
 ;;;###autoload
 (defun github-explorer (&optional repo)
   "Go REPO github."
@@ -156,22 +230,22 @@ From URL `https://github.com/akshaybadola/emacs-util'
                              (delete-region (+ 1 (point))
                                             (point-min))
                              (goto-char (point-min))
-                             (let* ((paths
-                                     (remove nil
-                                             (mapcar
-                                              (lambda (x)
-                                                (if (equal
-                                                     (cdr
-                                                      (assoc
-                                                       'type x))
-                                                     "blob")
-                                                    (cdr (assoc 'path x))))
-                                              (cdr (assoc 'tree
-                                                          (json-read)))))))
+                             (let*
+                                 ((paths
+                                   (remove nil
+                                           (mapcar
+                                            (lambda (x)
+                                              (pcase (cdr (assq 'type x))
+                                                ("blob" (cdr (assq 'path x)))))
+                                            (cdr
+                                             (assoc 'tree
+                                                    (github-explorer-json-read-buffer)))))))
                                (github-explorer-paths--put repo paths)
-                               (github-explorer--tree repo (format
-                                                            "https://api.github.com/repos/%s/git/trees/%s"
-                                                            repo "HEAD") "/")))))))))
+                               (github-explorer--tree repo
+                                                      (format
+                                                       "https://api.github.com/repos/%s/git/trees/%s"
+                                                       repo "HEAD")
+                                                      "/")))))))))
 
 (defun github-explorer-find-file ()
   "Find file in REPO."
@@ -278,25 +352,32 @@ pop-to-buffer(BUFFER-OR-NAME &OPTIONAL ACTION NORECORD)"
   "Get the type for an ITEM from GitHub."
   (cdr (assoc 'type item)))
 
+
 (defun github-explorer--render-object (github-explorer-object)
   "Render the GITHUB-EXPLORER-OBJECT."
   (let ((trees (cdr (assoc 'tree github-explorer-object))))
-  (cl-loop
-   for item across trees
-   for path = (github-explorer--item-path item)
-
-   if (string= (github-explorer--item-type item) "blob")
-   do (insert (format "  |----- %s" path))
-   else do
-   (insert (format "  |--[+] %s" path))
-   (left-char (length path))
-   (put-text-property (point) (+ (length path) (point)) 'face 'github-explorer-directory-face)
-
-   do
-   (put-text-property (line-beginning-position) (1+ (line-beginning-position)) 'invisible item)
-   (end-of-line)
+    (cl-loop
+     for item across trees
+     for path = (github-explorer--item-path item)
+     if (string= (github-explorer--item-type item) "blob")
+     do (insert (format "  |----- %s" path))
+     else do
+     (insert (format "  |--[+] %s" path))
+     (left-char (length path))
+     (put-text-property (point)
+                        (+ (length path)
+                           (point))
+                        'face
+                        'github-explorer-directory-face)
+     do
+     (put-text-property (line-beginning-position)
+                        (1+ (line-beginning-position)) 'invisible item)
+     (end-of-line)
      (insert "\n")))
-  (insert "\nMenu:\n(f) find file.\n(s) search string."))
+  (insert (substitute-command-keys
+           (format "\\{%s}" (symbol-name
+                             'github-explorer-mode-map))
+           t nil)))
 
 (define-derived-mode github-explorer-mode special-mode github-explorer-name
   "Major mode for exploring GitHub repository on the fly."
