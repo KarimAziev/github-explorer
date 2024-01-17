@@ -5,7 +5,7 @@
 ;; Author: Giap Tran <txgvnn@gmail.com>
 ;; URL: https://github.com/KarimAziev/github-explorer
 ;; Version: 1.1.0
-;; Package-Requires: ((emacs "27.1") (graphql "0.1.1") (cl-lib "1.0") (gh "1.0.1"))
+;; Package-Requires: ((emacs "27.1") (graphql "0.1.1") (cl-lib "1.0"))
 ;; Keywords: comm
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -32,9 +32,10 @@
 (require 'cl-lib)
 (require 'json)
 (require 'graphql)
+(require 'url)
 (require 'hi-lock)
-(require 'gh)
-(require 'gh-search)
+
+
 
 (defgroup github-explorer nil
   "Major mode of GitHub configuration file."
@@ -104,25 +105,7 @@ From URL `https://github.com/akshaybadola/emacs-util'
 
 
 
-;;;###autoload
-(defun github-explorer-search-read-repo (&optional search-string page-limit)
-  "Query github using SEARCH-STRING with PAGE-LIMIT."
-  (let* ((search-api (make-instance 'gh-search-api))
-         (search-response (gh-search-repos search-api
-                                           (or search-string
-                                               (read-string
-                                                "Enter a github search string: "))
-                                           (or page-limit 3)))
-         (repos (oref search-response data))
-         (alist (mapcar (lambda (repo)
-                          (let ((owner (oref repo owner)))
-                            (cons (format "%s/%s"
-                                          (if owner (oref owner login)
-                                            "owner-not-found")
-                                          (oref repo name))
-                                  repo)))
-                        repos)))
-    (completing-read "Repos: " alist)))
+
 
 (declare-function json-read "json")
 
@@ -214,7 +197,10 @@ represent a JSON false value.  It defaults to `:false'."
                          (and (eq major-mode 'package-menu-mode)
                               (github-explorer-repo-from-url
                                (github-explorer-util-package-try-get-package-url)))
-                         (github-explorer-search-read-repo)
+                         (when (and
+                                (require 'gh-repo nil t)
+                                (fboundp 'gh-repo-search-repos))
+                           (gh-repo-search-repos))
                          (thing-at-point 'symbol))))
   (let ((repo (read-string "Repository: " repo)))
     (url-retrieve (format
